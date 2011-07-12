@@ -1,0 +1,71 @@
+#!/usr/bin/perl
+
+# http://github.com/kraih/mojo
+use FindBin;
+use lib "$FindBin::Bin/mojo/lib";
+use lib "$FindBin::Bin/lib";
+
+# http://mojolicio.us/
+use Mojolicious::Lite;
+use Mojo::Server::Daemon;
+use Mojo::IOLoop;
+use Proxy::Memcached;
+use Mojo::IOWatcher::EV;
+
+my $ioloop = Mojo::IOLoop->singleton;
+
+$ioloop->iowatcher( Mojo::IOWatcher::EV->new );
+
+my $config = plugin json_config => {
+    file => 'server.conf',
+
+    # Don't edit this; edit server.conf instead ( these are the defaults )
+    default => {
+        listen => 'http://*:3000',
+        pid_file => '.server.pid',
+        doc_root => 'public',
+        mode => 'development',
+        keep_alive_timeout => 30,
+        proxy_to => {
+            address => '127.0.0.1',
+            port => 11211,
+        },
+        proxy_port => 11212,
+        content_types => {
+            "htc" => "text/x-component"
+        }
+    }
+};
+
+# resolve full paths
+$config->{"_$_"} = app->home->rel_dir( $config->{$_} ) foreach (qw( doc_root pid_file ));
+
+$ENV{MOJO_MODE} = $config->{mode} if $config->{mode};
+
+app->secret( $config->{secret} ) if $config->{secret};
+
+# set the applications dir as the HttpDoc dir
+app->static->root( $config->{_doc_root} );
+
+
+my $connection = Proxy::Memcached->new(
+    proxy_address => $config->{proxy_to}->{address},
+    proxy_port => $config->{proxy_to}->{port},
+);
+
+$connection->listen( $ioloop, '0.0.0.0', $config->{proxy_port} );
+
+#$ioloop->recurring(5 => sub {
+#    warn "recurring timer fired @_";
+#});
+
+# this replaces app->start
+if ( @ARGV ) {
+    app->start;
+} else {
+    my $daemon = Mojo::Server::Daemon->new;
+    $daemon->keep_alive_timeout( $config->{keep_alive_timeout} );
+    $daemon->listen([ $config->{listen} ]);
+    $daemon->run;
+}
+
